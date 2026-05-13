@@ -93,6 +93,16 @@ function appReducer(state, action) {
           ? { ...state.activeConnection, connected: action.payload.connected }
           : state.activeConnection,
       };
+
+    case 'REPLACE_CONNECTION':
+      return {
+        ...state,
+        connections: state.connections.map(conn =>
+          conn.id === action.payload.oldId
+            ? { ...action.payload.newConnection, saved: conn.saved, connectionString: conn.connectionString }
+            : conn
+        ),
+      };
     
     case 'ADD_SAVED_CONNECTION':
       return { 
@@ -407,15 +417,16 @@ export function AppProvider({ children }) {
     try {
       dispatch({ type: 'SET_LOADING', payload: true });
       dispatch({ type: 'CLEAR_ERROR' });
-      
-      const connection = await azureServiceBusService.createConnection(connectionString, name);
+
+      const trimmedConnectionString = connectionString.trim().replace(/;+$/, '');
+      const connection = await azureServiceBusService.createConnection(trimmedConnectionString, name);
       dispatch({ type: 'ADD_CONNECTION', payload: connection });
       
       // If saving, add to localStorage
       if (saveConnection) {
         const savedConnection = {
           ...connection,
-          connectionString, // Store the connection string for saved connections
+          connectionString: trimmedConnectionString, // Store the connection string for saved connections
           saved: true
         };
         addSavedConnection(savedConnection);
@@ -548,18 +559,31 @@ export function AppProvider({ children }) {
       if (!connectionString) {
         throw new Error('Connection string not found for saved connection. Please check if the connection was saved properly.');
       }
-      
+
+      connectionString = connectionString.trim().replace(/;+$/, '');
+
       // Use the connection string to reconnect
       const reconnectedConnection = await azureServiceBusService.createConnection(
         connectionString, 
         connection.name
       );
       
-      // Update the connection status in the connections array
-      dispatch({ type: 'UPDATE_CONNECTION_STATUS', payload: { id: connection.id, connected: true } });
-      
-      // Set as active connection first
-      dispatch({ type: 'SET_ACTIVE_CONNECTION', payload: reconnectedConnection });
+      // Replace the old connection entry with the new one, preserving saved/connectionString
+      dispatch({
+        type: 'REPLACE_CONNECTION',
+        payload: {
+          oldId: connection.id,
+          newConnection: {
+            ...reconnectedConnection,
+            name: connection.name,
+            saved: connection.saved ?? false,
+            connectionString,
+          },
+        },
+      });
+
+      // Set as active connection
+      dispatch({ type: 'SET_ACTIVE_CONNECTION', payload: { ...reconnectedConnection, name: connection.name } });
       
       try {
         // Load queues and topics immediately
@@ -625,21 +649,17 @@ export function AppProvider({ children }) {
   };
 
   const setActiveConnection = async (connection) => {
+    const isAlreadyActive = state.activeConnection?.id === connection?.id;
     dispatch({ type: 'SET_ACTIVE_CONNECTION', payload: connection });
-    
-    // If switching to a connection that doesn't have loaded data yet, load it
-    if (connection && (state.queues.length === 0 || state.topics.length === 0)) {
+
+    // Always reload when switching to a different connection — SET_ACTIVE_CONNECTION clears queues/topics
+    if (!isAlreadyActive && connection) {
       try {
-        // Load both queues and topics in parallel to get their counts
         await Promise.all([
           loadQueues(),
           loadTopics()
         ]);
-        
-        // Also load all subscriptions for all topics immediately
         await loadAllTopicsSubscriptions();
-        
-        // Load message counts immediately after loading entities
         await loadQueueMessageCounts();
       } catch (error) {
         console.error('Error loading queues and topics for connection:', error);
