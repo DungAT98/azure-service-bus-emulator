@@ -5,6 +5,34 @@ class AzureServiceBusService {
     this.connections = new Map();
   }
 
+  // Azure Service Bus SDK limits peekMessages to 250 per call.
+  // This helper loops using fromSequenceNumber to retrieve all requested messages.
+  async peekAllMessages(receiver, maxMessages) {
+    const BATCH_SIZE = 250;
+    const allMessages = [];
+    let fromSequenceNumber = undefined;
+
+    while (allMessages.length < maxMessages) {
+      const remaining = maxMessages - allMessages.length;
+      const batchSize = Math.min(BATCH_SIZE, remaining);
+
+      const options = fromSequenceNumber !== undefined ? { fromSequenceNumber } : {};
+      const batch = await receiver.peekMessages(batchSize, options);
+
+      if (batch.length === 0) break;
+
+      allMessages.push(...batch);
+
+      // sequenceNumber is a Long from the 'long' package; advance past the last message
+      const lastMsg = batch[batch.length - 1];
+      fromSequenceNumber = lastMsg.sequenceNumber.add(1);
+
+      if (batch.length < batchSize) break;
+    }
+
+    return allMessages;
+  }
+
   async createConnection(connectionString, name) {
     try {
       const adminClient = new ServiceBusAdministrationClient(connectionString);
@@ -113,7 +141,7 @@ class AzureServiceBusService {
 
     try {
       const receiver = connection.client.createReceiver(queueName);
-      const messages = await receiver.peekMessages(maxMessages);
+      const messages = await this.peekAllMessages(receiver, maxMessages);
       await receiver.close();
       
       return messages.map(msg => ({
@@ -175,7 +203,7 @@ class AzureServiceBusService {
       const receiver = connection.client.createReceiver(queueName, {
         subQueueType: 'deadLetter'
       });
-      const messages = await receiver.peekMessages(maxMessages);
+      const messages = await this.peekAllMessages(receiver, maxMessages);
       await receiver.close();
       
       return messages.map(msg => ({
@@ -261,7 +289,7 @@ class AzureServiceBusService {
 
     try {
       const receiver = connection.client.createReceiver(topicName, subscriptionName);
-      const messages = await receiver.peekMessages(maxMessages);
+      const messages = await this.peekAllMessages(receiver, maxMessages);
       await receiver.close();
       
       return messages.map(msg => ({
@@ -289,7 +317,7 @@ class AzureServiceBusService {
       const receiver = connection.client.createReceiver(topicName, subscriptionName, {
         subQueueType: 'deadLetter'
       });
-      const messages = await receiver.peekMessages(maxMessages);
+      const messages = await this.peekAllMessages(receiver, maxMessages);
       await receiver.close();
       
       return messages.map(msg => ({

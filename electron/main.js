@@ -64,6 +64,34 @@ function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).substr(2);
 }
 
+// Azure Service Bus SDK limits peekMessages to 250 per call.
+// This helper loops using fromSequenceNumber to retrieve all requested messages.
+async function peekAllMessages(receiver, maxMessages) {
+  const BATCH_SIZE = 250;
+  const allMessages = [];
+  let fromSequenceNumber = undefined;
+
+  while (allMessages.length < maxMessages) {
+    const remaining = maxMessages - allMessages.length;
+    const batchSize = Math.min(BATCH_SIZE, remaining);
+
+    const options = fromSequenceNumber !== undefined ? { fromSequenceNumber } : {};
+    const batch = await receiver.peekMessages(batchSize, options);
+
+    if (batch.length === 0) break;
+
+    allMessages.push(...batch);
+
+    // sequenceNumber is a Long from the 'long' package; advance past the last message
+    const lastMsg = batch[batch.length - 1];
+    fromSequenceNumber = lastMsg.sequenceNumber.add(1);
+
+    if (batch.length < batchSize) break;
+  }
+
+  return allMessages;
+}
+
 // IPC Handlers for Azure Service Bus operations
 ipcMain.handle('azure-sb-connect', async (event, { connectionString, name }) => {
   try {
@@ -170,7 +198,7 @@ ipcMain.handle('azure-sb-get-queue-messages', async (event, { connectionId, queu
     const freshClient = new ServiceBusClient(connection.connectionString);
     
     const receiver = freshClient.createReceiver(queueName);
-    const messages = await receiver.peekMessages(maxMessages);
+    const messages = await peekAllMessages(receiver, maxMessages);
     await receiver.close();
     await freshClient.close();
     
@@ -205,7 +233,7 @@ ipcMain.handle('azure-sb-get-queue-dead-letter-messages', async (event, { connec
     const freshClient = new ServiceBusClient(connection.connectionString);
     
     const receiver = freshClient.createReceiver(queueName, { subQueueType: 'deadLetter' });
-    const messages = await receiver.peekMessages(maxMessages);
+    const messages = await peekAllMessages(receiver, maxMessages);
     await receiver.close();
     await freshClient.close();
     
@@ -304,7 +332,7 @@ ipcMain.handle('azure-sb-get-subscription-messages', async (event, { connectionI
     const freshClient = new ServiceBusClient(connection.connectionString);
     
     const receiver = freshClient.createReceiver(topicName, subscriptionName);
-    const messages = await receiver.peekMessages(maxMessages);
+    const messages = await peekAllMessages(receiver, maxMessages);
     await receiver.close();
     await freshClient.close();
     
@@ -339,7 +367,7 @@ ipcMain.handle('azure-sb-get-subscription-dead-letter-messages', async (event, {
     const freshClient = new ServiceBusClient(connection.connectionString);
     
     const receiver = freshClient.createReceiver(topicName, subscriptionName, { subQueueType: 'deadLetter' });
-    const messages = await receiver.peekMessages(maxMessages);
+    const messages = await peekAllMessages(receiver, maxMessages);
     await receiver.close();
     await freshClient.close();
     
@@ -378,7 +406,7 @@ ipcMain.handle('azure-sb-get-all-subscription-messages', async (event, { connect
     
     // Fetch active messages
     const activeReceiver = freshClient.createReceiver(topicName, subscriptionName);
-    const activeMessages = await activeReceiver.peekMessages(maxMessages);
+    const activeMessages = await peekAllMessages(activeReceiver, maxMessages);
     await activeReceiver.close();
     
     // Small delay to ensure clean separation
@@ -388,7 +416,7 @@ ipcMain.handle('azure-sb-get-all-subscription-messages', async (event, { connect
     const deadLetterReceiver = freshClient.createReceiver(topicName, subscriptionName, {
       subQueueType: 'deadLetter'
     });
-    const deadLetterMessages = await deadLetterReceiver.peekMessages(maxMessages);
+    const deadLetterMessages = await peekAllMessages(deadLetterReceiver, maxMessages);
     await deadLetterReceiver.close();
     
     // Close the fresh client
